@@ -1,0 +1,86 @@
+name: Build Desktop Releases
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build_macos:
+    name: Build macOS App
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Package macOS app
+        run: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent sftp_sync_manager.app sftp_sync_manager-macos.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sftp-sync-manager-macos
+          path: build/macos/Build/Products/Release/sftp_sync_manager-macos.zip
+
+  build_windows:
+    name: Build Windows App
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+        shell: pwsh
+
+      - name: Run tests
+        run: flutter test
+        shell: pwsh
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+        shell: pwsh
+
+      - name: Build Windows release
+        run: flutter build windows --release
+        shell: pwsh
+
+      - name: Package Windows app
+        run: |
+          $output = "build/windows/runner/Release"
+          $zipPath = "build/windows/runner/sftp_sync_manager-windows.zip"
+          Compress-Archive -Path "$output/*" -DestinationPath $zipPath -Force
+        shell: pwsh
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sftp-sync-manager-windows
+          path: build/windows/runner/sftp_sync_manager-windows.zip
