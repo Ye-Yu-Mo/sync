@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/services.dart';
+import '../utils/remote_path.dart';
 
 /// 任务编辑界面
 class TaskEditScreen extends StatefulWidget {
@@ -16,6 +17,7 @@ class TaskEditScreen extends StatefulWidget {
 class _TaskEditScreenState extends State<TaskEditScreen> {
   final _formKey = GlobalKey<FormState>();
   final StorageService _storage = StorageService();
+  final SchedulerService _scheduler = SchedulerService();
   late final TaskManager _taskManager;
 
   // 表单控制器
@@ -23,15 +25,18 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
   late final TextEditingController _localDirController;
   late final TextEditingController _remoteDirController;
   late final TextEditingController _intervalController;
+  late final TextEditingController _fileBrowserUserController;
 
-  String _fileBrowserUser = 'yachen'; // 默认值
+  bool _isScanningUsers = false;
+  String? _lastUserScanError;
+  String _remoteBaseDisplay = '/data';
   bool _enabled = true;
   bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-    _taskManager = TaskManager(_storage);
+    _taskManager = TaskManager(_storage, scheduler: _scheduler);
 
     // 初始化控制器
     final task = widget.task;
@@ -41,8 +46,10 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
     _intervalController = TextEditingController(
       text: task?.intervalMinutes.toString() ?? '30',
     );
-    _fileBrowserUser = task?.fileBrowserUser ?? 'yachen';
+    _fileBrowserUserController =
+        TextEditingController(text: task?.fileBrowserUser ?? 'yachen');
     _enabled = task?.enabled ?? true;
+    _loadRemoteBaseDir();
   }
 
   @override
@@ -50,6 +57,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
     _nameController.dispose();
     _localDirController.dispose();
     _remoteDirController.dispose();
+    _fileBrowserUserController.dispose();
     _intervalController.dispose();
     super.dispose();
   }
@@ -124,12 +132,12 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
             // 远程目录
             TextFormField(
               controller: _remoteDirController,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: '远程目录',
                 hintText: '例如：/backup/documents',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.cloud_outlined),
-                helperText: '服务器上的目标路径（相对于SFTP根目录）',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.cloud_outlined),
+                helperText: '相对于 $_remoteBaseDisplay/<用户> 的路径',
               ),
               validator: _validateRemoteDir,
               textInputAction: TextInputAction.next,
@@ -137,33 +145,43 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
 
             const SizedBox(height: 16),
 
-            // FileBrowser 用户选择
-            DropdownButtonFormField<String>(
-              initialValue: _fileBrowserUser,
-              decoration: const InputDecoration(
+            // FileBrowser 用户
+            TextFormField(
+              controller: _fileBrowserUserController,
+              decoration: InputDecoration(
                 labelText: 'FileBrowser 用户',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person_outline),
-                helperText: '选择要同步到哪个用户的云盘目录',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.person_outline),
+                helperText: '同步到 $_remoteBaseDisplay/<用户>',
               ),
-              items: const [
-                DropdownMenuItem(
-                  value: 'yachen',
-                  child: Text('yachen (/data/yachen)'),
-                ),
-                DropdownMenuItem(
-                  value: 'xulei',
-                  child: Text('xulei (/data/xulei)'),
-                ),
-              ],
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() {
-                    _fileBrowserUser = value;
-                  });
-                }
-              },
+              validator: _validateFileBrowserUser,
+              textInputAction: TextInputAction.next,
             ),
+
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _isScanningUsers ? null : _scanRemoteUsers,
+                icon: _isScanningUsers
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_sync_outlined),
+                label: Text(_isScanningUsers
+                    ? '正在扫描 $_remoteBaseDisplay...'
+                    : '扫描 $_remoteBaseDisplay 获取用户'),
+              ),
+            ),
+            if (_lastUserScanError != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  _lastUserScanError!,
+                  style: const TextStyle(color: Colors.red, fontSize: 12),
+                ),
+              ),
 
             const SizedBox(height: 16),
 
@@ -285,6 +303,18 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
     return null;
   }
 
+  /// 验证 FileBrowser 用户
+  String? _validateFileBrowserUser(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return '请输入 FileBrowser 用户';
+    }
+    final trimmed = value.trim();
+    if (trimmed.contains('/')) {
+      return '用户名不能包含 /';
+    }
+    return null;
+  }
+
   /// 验证同步间隔
   String? _validateInterval(String? value) {
     if (value == null || value.trim().isEmpty) {
@@ -327,6 +357,91 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
     }
   }
 
+  Future<void> _scanRemoteUsers() async {
+    setState(() {
+      _isScanningUsers = true;
+      _lastUserScanError = null;
+    });
+
+    try {
+      final config = await _storage.loadConfig();
+      if (config == null) {
+        throw Exception('请先创建服务器配置');
+      }
+
+      final baseDir = normalizeRemoteBase(config.server.remoteBaseDir);
+      final client = ResilientSftpClient();
+
+      try {
+        await client.connect(
+          host: config.server.host,
+          port: config.server.port,
+          username: config.server.username,
+          password: config.server.password,
+        );
+
+        final entries = await client.listDirectory(baseDir);
+        final users = entries
+            .where((item) => item.isDirectory)
+            .map((item) => item.name)
+            .where((name) => name != '.' && name != '..')
+            .toList()
+          ..sort();
+
+        if (users.isEmpty) {
+          throw Exception('在 $baseDir 下未找到目录');
+        }
+
+        setState(() {
+          _remoteBaseDisplay = baseDir;
+        });
+
+        final selected = await showDialog<String>(
+          context: context,
+          builder: (context) => SimpleDialog(
+            title: Text('选择 FileBrowser 用户 ($baseDir)'),
+            children: users
+                .map(
+                  (user) => SimpleDialogOption(
+                    onPressed: () => Navigator.pop(context, user),
+                    child: Text(user),
+                  ),
+                )
+                .toList(),
+          ),
+        );
+
+        if (selected != null) {
+          _fileBrowserUserController.text = selected;
+        }
+      } finally {
+        await client.disconnect();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _lastUserScanError = e.toString());
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('扫描失败: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isScanningUsers = false);
+      }
+    }
+  }
+
+  Future<void> _loadRemoteBaseDir() async {
+    try {
+      final config = await _storage.loadConfig();
+      if (config != null && mounted) {
+        setState(() {
+          _remoteBaseDisplay = normalizeRemoteBase(config.server.remoteBaseDir);
+        });
+      }
+    } catch (_) {}
+  }
+
   /// 保存任务
   Future<void> _saveTask() async {
     if (!_formKey.currentState!.validate()) {
@@ -342,6 +457,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
       final localDir = _localDirController.text.trim();
       final remoteDir = _remoteDirController.text.trim();
       final intervalMinutes = int.parse(_intervalController.text.trim());
+      final fileBrowserUser = _fileBrowserUserController.text.trim();
 
       if (widget.task == null) {
         // 新建任务
@@ -349,7 +465,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
           name: name,
           localDir: localDir,
           remoteDir: remoteDir,
-          fileBrowserUser: _fileBrowserUser,
+          fileBrowserUser: fileBrowserUser,
           intervalMinutes: intervalMinutes,
           enabled: _enabled,
         );
@@ -365,7 +481,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
           name: name,
           localDir: localDir,
           remoteDir: remoteDir,
-          fileBrowserUser: _fileBrowserUser,
+          fileBrowserUser: fileBrowserUser,
           intervalMinutes: intervalMinutes,
           enabled: _enabled,
         );

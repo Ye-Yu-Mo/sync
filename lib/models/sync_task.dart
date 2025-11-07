@@ -11,7 +11,7 @@ class SyncTask {
   /// 本地目录绝对路径
   final String localDir;
 
-  /// 远程目录（相对于 /data/\<fileBrowserUser\> 的路径）
+  /// 远程目录（相对于 remoteBaseDir/\<fileBrowserUser\> 的路径）
   final String remoteDir;
 
   /// FileBrowser 用户名（yachen/xulei）

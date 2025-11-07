@@ -1,23 +1,37 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:workmanager/workmanager.dart';
 import '../../models/models.dart';
 import '../storage/storage_service.dart';
 import '../sync_engine.dart';
 import '../transport/transport.dart';
+import '../../utils/remote_path.dart';
 
 /// 后台调度服务
 class SchedulerService {
   static const String _taskPrefix = 'sync_task_';
+  static final bool _workmanagerSupported =
+      Platform.isAndroid || Platform.isIOS;
+  static final _DesktopScheduler _desktopScheduler = _DesktopScheduler();
 
   /// 初始化 WorkManager
   static Future<void> initialize() async {
-    await Workmanager().initialize(
-      backgroundSyncCallback,
-    );
+    if (_workmanagerSupported) {
+      await Workmanager().initialize(
+        backgroundSyncCallback,
+      );
+    } else {
+      _desktopScheduler.start();
+    }
   }
 
   /// 注册后台任务（Task 8.1）
   Future<void> scheduleTask(String taskId, int intervalMinutes) async {
+    if (!_workmanagerSupported) {
+      _desktopScheduler.scheduleTask(taskId, intervalMinutes);
+      return;
+    }
+
     final uniqueName = _getUniqueName(taskId);
 
     try {
@@ -43,6 +57,11 @@ class SchedulerService {
 
   /// 取消后台任务（Task 8.1）
   Future<void> cancelTask(String taskId) async {
+    if (!_workmanagerSupported) {
+      _desktopScheduler.cancelTask(taskId);
+      return;
+    }
+
     final uniqueName = _getUniqueName(taskId);
 
     try {
@@ -54,6 +73,11 @@ class SchedulerService {
 
   /// 取消所有后台任务
   Future<void> cancelAllTasks() async {
+    if (!_workmanagerSupported) {
+      _desktopScheduler.cancelAll();
+      return;
+    }
+
     try {
       await Workmanager().cancelAll();
     } catch (e) {
@@ -88,86 +112,74 @@ class SchedulerService {
 @pragma('vm:entry-point')
 void backgroundSyncCallback() {
   Workmanager().executeTask((task, inputData) async {
-    try {
-      // 获取任务 ID
-      final taskId = inputData?['taskId'] as String?;
-      if (taskId == null) {
-        return Future.value(false);
-      }
-
-      // 加载配置
-      final storage = StorageService();
-      final config = await storage.loadConfig();
-      if (config == null) {
-        return Future.value(false);
-      }
-
-      // 查找任务
-      final syncTask = config.findTaskById(taskId);
-      if (syncTask == null || !syncTask.enabled) {
-        return Future.value(false);
-      }
-
-      // 执行同步
-      final client = ResilientSftpClient();
-      final engine = SyncEngine(client);
-
-      try {
-        // 连接到服务器
-        await client.connect(
-          host: config.server.host,
-          port: config.server.port,
-          username: config.server.username,
-          password: config.server.password,
-        );
-
-        // 计算远程完整路径：/data/<fileBrowserUser>/<remoteDir>
-        final remoteFullPath = _joinRemotePath(
-          '/data/${syncTask.fileBrowserUser}',
-          syncTask.remoteDir,
-        );
-
-        // 执行同步
-        final result = await engine.performFullSync(
-          localDir: syncTask.localDir,
-          remoteDir: remoteFullPath,
-          lastSyncTime: syncTask.lastSyncTime,
-          autoDelete: false, // 后台不自动删除
-        );
-
-        // 断开连接
-        await client.disconnect();
-
-        // 显示通知
-        await _showNotification(
-          taskName: syncTask.name,
-          result: result,
-        );
-
-        // 更新最后同步时间（如果成功）
-        if (result.isSuccess) {
-          // 注意：这里需要重新加载配置，因为可能被其他进程修改
-          final updatedConfig = await storage.loadConfig();
-          if (updatedConfig != null) {
-            final updatedTask = syncTask.copyWith(
-              lastSyncTime: DateTime.now(),
-              status: SyncStatus.idle,
-            );
-            final newConfig = updatedConfig.updateTask(taskId, updatedTask);
-            await storage.saveConfig(newConfig);
-          }
-        }
-
-        return Future.value(true);
-      } finally {
-        await client.disconnect();
-      }
-    } catch (e) {
-      // 后台任务失败，记录错误
-      // TODO: 使用日志系统记录错误
+    final taskId = inputData?['taskId'] as String?;
+    if (taskId == null) {
       return Future.value(false);
     }
+
+    return _performSyncTask(taskId);
   });
+}
+
+Future<bool> _performSyncTask(String taskId) async {
+  try {
+    final storage = StorageService();
+    final config = await storage.loadConfig();
+    if (config == null) {
+      return false;
+    }
+
+    final syncTask = config.findTaskById(taskId);
+    if (syncTask == null || !syncTask.enabled) {
+      return false;
+    }
+
+    final client = ResilientSftpClient();
+    final engine = SyncEngine(client);
+
+    try {
+      await client.connect(
+        host: config.server.host,
+        port: config.server.port,
+        username: config.server.username,
+        password: config.server.password,
+      );
+
+      final remoteFullPath = buildRemoteTaskPath(config.server, syncTask);
+
+      final result = await engine.performFullSync(
+        localDir: syncTask.localDir,
+        remoteDir: remoteFullPath,
+        lastSyncTime: syncTask.lastSyncTime,
+        autoDelete: false,
+      );
+
+      await client.disconnect();
+
+      await _showNotification(
+        taskName: syncTask.name,
+        result: result,
+      );
+
+      if (result.isSuccess) {
+        final updatedConfig = await storage.loadConfig();
+        if (updatedConfig != null) {
+          final updatedTask = syncTask.copyWith(
+            lastSyncTime: DateTime.now(),
+            status: SyncStatus.idle,
+          );
+          final newConfig = updatedConfig.updateTask(taskId, updatedTask);
+          await storage.saveConfig(newConfig);
+        }
+      }
+
+      return true;
+    } finally {
+      await client.disconnect();
+    }
+  } catch (_) {
+    return false;
+  }
 }
 
 /// 显示同步完成通知
@@ -182,18 +194,6 @@ Future<void> _showNotification({
   //     : '失败：${result.errors.first}';
 }
 
-/// 拼接远程路径
-String _joinRemotePath(String base, String relative) {
-  final trimmedBase = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
-  final trimmedRelative = relative.startsWith('/') ? relative.substring(1) : relative;
-
-  if (trimmedRelative.isEmpty) {
-    return trimmedBase;
-  }
-
-  return '$trimmedBase/$trimmedRelative';
-}
-
 /// 调度器异常
 class SchedulerException implements Exception {
   final String message;
@@ -202,4 +202,33 @@ class SchedulerException implements Exception {
 
   @override
   String toString() => 'SchedulerException: $message';
+}
+
+class _DesktopScheduler {
+  final Map<String, Timer> _timers = {};
+  bool _started = false;
+
+  void start() {
+    _started = true;
+  }
+
+  void scheduleTask(String taskId, int intervalMinutes) {
+    if (!_started) return;
+    cancelTask(taskId);
+    final timer = Timer.periodic(Duration(minutes: intervalMinutes), (_) {
+      unawaited(_performSyncTask(taskId));
+    });
+    _timers[taskId] = timer;
+  }
+
+  void cancelTask(String taskId) {
+    _timers.remove(taskId)?.cancel();
+  }
+
+  void cancelAll() {
+    for (final timer in _timers.values) {
+      timer.cancel();
+    }
+    _timers.clear();
+  }
 }

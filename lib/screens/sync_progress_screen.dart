@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/services.dart';
+import '../utils/remote_path.dart';
 
 /// 同步进度界面
 class SyncProgressScreen extends StatefulWidget {
@@ -81,10 +82,7 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
       });
 
       // 2. 扫描文件变更
-      final remoteFullPath = _joinRemotePath(
-        '/data/${widget.task.fileBrowserUser}',
-        widget.task.remoteDir,
-      );
+      final remoteFullPath = buildRemoteTaskPath(config.server, widget.task);
 
       _changes = await _engine.scanChanges(
         widget.task.localDir,
@@ -215,14 +213,6 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
     } catch (e) {
       // 更新状态失败不影响主流程
     }
-  }
-
-  /// 拼接远程路径
-  String _joinRemotePath(String base, String relative) {
-    if (relative == '/') return base;
-    final cleanBase = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
-    final cleanRelative = relative.startsWith('/') ? relative : '/$relative';
-    return '$cleanBase$cleanRelative';
   }
 
   @override

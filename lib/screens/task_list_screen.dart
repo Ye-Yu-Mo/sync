@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/services.dart';
+import 'server_config_screen.dart';
 import 'task_edit_screen.dart';
 import 'sync_progress_screen.dart';
 
@@ -14,45 +15,58 @@ class TaskListScreen extends StatefulWidget {
 
 class _TaskListScreenState extends State<TaskListScreen> {
   final StorageService _storage = StorageService();
+  final SchedulerService _scheduler = SchedulerService();
   late final TaskManager _taskManager;
   List<SyncTask> _tasks = [];
   bool _isLoading = true;
+  bool _needsServerConfig = false;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
-    _taskManager = TaskManager(_storage);
+    _taskManager = TaskManager(_storage, scheduler: _scheduler);
     _loadTasks();
   }
 
   Future<void> _loadTasks() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
     try {
       final tasks = await _taskManager.loadTasks();
       if (mounted) {
         setState(() {
           _tasks = tasks;
           _isLoading = false;
+          _needsServerConfig = false;
         });
       }
     } catch (e) {
+      final needsConfig =
+          e is TaskManagerException && e.message.contains('服务器配置');
       if (mounted) {
         setState(() {
           _tasks = [];
           _isLoading = false;
+          _needsServerConfig = needsConfig;
+          _loadError = needsConfig ? null : e.toString();
         });
 
-        // 延迟显示错误，避免在初始化时显示
-        Future.delayed(const Duration(milliseconds: 500), () {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('加载任务失败: $e'),
-                duration: const Duration(seconds: 3),
-              ),
-            );
-          }
-        });
+        if (!needsConfig) {
+          // 延迟显示错误，避免在初始化时显示
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted && _loadError != null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('加载任务失败: $e'),
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+            }
+          });
+        }
       }
     }
   }
@@ -64,6 +78,11 @@ class _TaskListScreenState extends State<TaskListScreen> {
         title: const Text('SFTP 同步管理'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: _openServerConfig,
+            tooltip: '服务器配置',
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadTasks,
             tooltip: '刷新',
@@ -72,9 +91,10 @@ class _TaskListScreenState extends State<TaskListScreen> {
       ),
       body: _buildBody(),
       floatingActionButton: FloatingActionButton(
-        onPressed: _createNewTask,
-        tooltip: '新建任务',
-        child: const Icon(Icons.add),
+        onPressed:
+            _needsServerConfig ? _openServerConfig : _createNewTask,
+        tooltip: _needsServerConfig ? '先配置服务器' : '新建任务',
+        child: Icon(_needsServerConfig ? Icons.settings : Icons.add),
       ),
     );
   }
@@ -82,6 +102,14 @@ class _TaskListScreenState extends State<TaskListScreen> {
   Widget _buildBody() {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_needsServerConfig) {
+      return _buildServerConfigPrompt();
+    }
+
+    if (_loadError != null) {
+      return _buildErrorPlaceholder();
     }
 
     if (_tasks.isEmpty) {
@@ -124,6 +152,67 @@ class _TaskListScreenState extends State<TaskListScreen> {
     );
   }
 
+  Widget _buildServerConfigPrompt() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.settings_suggest, size: 72, color: Colors.orange[300]),
+            const SizedBox(height: 16),
+            const Text(
+              '请先创建服务器配置',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '配置 SFTP 服务器后即可创建同步任务。',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _openServerConfig,
+              icon: const Icon(Icons.settings),
+              label: const Text('配置服务器'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorPlaceholder() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: Colors.redAccent),
+            const SizedBox(height: 16),
+            const Text(
+              '加载任务失败',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _loadError ?? '未知错误',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _loadTasks,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _createNewTask() async {
     final result = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -133,6 +222,20 @@ class _TaskListScreenState extends State<TaskListScreen> {
 
     // 如果保存成功，刷新任务列表
     if (result == true) {
+      _taskManager.clearCache();
+      await _loadTasks();
+    }
+  }
+
+  Future<void> _openServerConfig() async {
+    final result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (context) => const ServerConfigScreen(),
+      ),
+    );
+
+    if (result == true) {
+      _taskManager.clearCache();
       await _loadTasks();
     }
   }
@@ -180,6 +283,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
 
     // 如果保存成功，刷新任务列表
     if (result == true) {
+      _taskManager.clearCache();
       await _loadTasks();
     }
   }

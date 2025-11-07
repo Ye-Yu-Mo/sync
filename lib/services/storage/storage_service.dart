@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../models/models.dart';
@@ -8,6 +9,7 @@ import '../../models/models.dart';
 class StorageService {
   static const String _passwordKey = 'ssh_password';
   static const String _passwordPlaceholder = '<encrypted>';
+  static bool _secureStorageAvailable = true;
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
@@ -65,11 +67,27 @@ class StorageService {
       // 解析配置
       var config = AppConfig.fromJson(jsonData);
 
-      // 从安全存储加载密码
-      final password = await loadPassword();
-      if (password != null) {
+      String? password;
+      if (_secureStorageAvailable) {
+        try {
+          password = await loadPassword();
+        } on StorageException catch (e) {
+          debugPrint('Secure storage unavailable, fallback to plain password: $e');
+          password = null;
+        }
+      }
+
+      if (password != null && password.isNotEmpty) {
         config = config.copyWith(
           server: config.server.copyWith(password: password),
+        );
+      } else if (config.server.password != _passwordPlaceholder) {
+        // 已经回退到明文存储
+        debugPrint('Using password from config file (secure storage disabled)');
+      } else {
+        // 占位符且无法读取密码，置空提示用户重新输入
+        config = config.copyWith(
+          server: config.server.copyWith(password: ''),
         );
       }
 
@@ -85,13 +103,22 @@ class StorageService {
       final configPath = await getConfigPath();
       final file = File(configPath);
 
-      // 保存密码到安全存储
-      await savePassword(config.server.password);
+      var useSecureStorage = _secureStorageAvailable;
 
-      // 配置文件中密码字段使用占位符
-      final configWithPlaceholder = config.copyWith(
-        server: config.server.copyWith(password: _passwordPlaceholder),
-      );
+      if (useSecureStorage) {
+        try {
+          await savePassword(config.server.password);
+        } on StorageException catch (e) {
+          debugPrint('Secure storage write failed, fallback to plain text: $e');
+          useSecureStorage = false;
+        }
+      }
+
+      // 配置文件中密码字段使用占位符（若可用）
+      final serverConfig = useSecureStorage
+          ? config.server.copyWith(password: _passwordPlaceholder)
+          : config.server;
+      final configWithPlaceholder = config.copyWith(server: serverConfig);
 
       // 转换为 JSON 并格式化
       final jsonData = configWithPlaceholder.toJson();
@@ -106,27 +133,39 @@ class StorageService {
 
   /// 保存密码（加密存储）
   Future<void> savePassword(String password) async {
+    if (!_secureStorageAvailable) {
+      throw const StorageException('Secure storage 不可用');
+    }
     try {
       await _secureStorage.write(key: _passwordKey, value: password);
     } catch (e) {
+      _secureStorageAvailable = false;
       throw StorageException('保存密码失败: $e');
     }
   }
 
   /// 加载密码（读取解密）
   Future<String?> loadPassword() async {
+    if (!_secureStorageAvailable) {
+      return null;
+    }
     try {
       return await _secureStorage.read(key: _passwordKey);
     } catch (e) {
+      _secureStorageAvailable = false;
       throw StorageException('读取密码失败: $e');
     }
   }
 
   /// 删除密码
   Future<void> deletePassword() async {
+    if (!_secureStorageAvailable) {
+      return;
+    }
     try {
       await _secureStorage.delete(key: _passwordKey);
     } catch (e) {
+      _secureStorageAvailable = false;
       throw StorageException('删除密码失败: $e');
     }
   }

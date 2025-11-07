@@ -4,10 +4,16 @@ import 'services/services.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final scheduler = SchedulerService();
+  final storage = StorageService();
 
   // 初始化 WorkManager（仅在支持的平台上）
   try {
     await SchedulerService.initialize();
+    final config = await storage.loadConfig();
+    if (config != null) {
+      await scheduler.scheduleAllEnabledTasks(config.tasks);
+    }
   } catch (e) {
     // WorkManager 在某些平台上可能不支持，忽略错误继续启动
     debugPrint('WorkManager 初始化失败（可能不支持当前平台）: $e');

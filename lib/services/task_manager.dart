@@ -1,13 +1,16 @@
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import 'storage/storage_service.dart';
+import 'scheduler/scheduler_service.dart';
 
 /// 任务管理器
 class TaskManager {
   final StorageService _storage;
-  AppConfig? _cachedConfig;
+  final SchedulerService? _scheduler;
 
-  TaskManager(this._storage);
+  TaskManager(this._storage, {SchedulerService? scheduler})
+      : _scheduler = scheduler;
 
   /// 加载所有任务
   Future<List<SyncTask>> loadTasks() async {
@@ -38,6 +41,7 @@ class TaskManager {
     final config = await _getConfig();
     final newConfig = config.addTask(task);
     await _saveConfig(newConfig);
+    await _scheduleTaskIfNeeded(task);
 
     return task;
   }
@@ -54,6 +58,7 @@ class TaskManager {
 
     final newConfig = config.updateTask(taskId, updatedTask);
     await _saveConfig(newConfig);
+    await _updateScheduledTask(existingTask, updatedTask);
   }
 
   /// 删除任务
@@ -68,6 +73,7 @@ class TaskManager {
 
     final newConfig = config.removeTask(taskId);
     await _saveConfig(newConfig);
+    await _cancelScheduledTask(taskId);
   }
 
   /// 启用/禁用任务
@@ -82,6 +88,12 @@ class TaskManager {
 
     final newConfig = config.toggleTask(taskId, enabled);
     await _saveConfig(newConfig);
+    final updatedTask = newConfig.findTaskById(taskId)!;
+    if (enabled) {
+      await _scheduleTaskIfNeeded(updatedTask);
+    } else {
+      await _cancelScheduledTask(taskId);
+    }
   }
 
   /// 根据 ID 查找任务
@@ -139,29 +151,22 @@ class TaskManager {
 
   /// 获取配置（带缓存）
   Future<AppConfig> _getConfig() async {
-    if (_cachedConfig != null) {
-      return _cachedConfig!;
-    }
-
-    _cachedConfig = await _storage.loadConfig();
-
-    // 如果配置不存在，创建默认配置
-    if (_cachedConfig == null) {
+    final config = await _storage.loadConfig();
+    if (config == null) {
       throw TaskManagerException('配置文件不存在，请先创建服务器配置');
     }
 
-    return _cachedConfig!;
+    return config;
   }
 
   /// 保存配置并更新缓存
   Future<void> _saveConfig(AppConfig config) async {
     await _storage.saveConfig(config);
-    _cachedConfig = config;
   }
 
   /// 清除缓存（用于测试或强制重新加载）
   void clearCache() {
-    _cachedConfig = null;
+    // 已不再使用缓存，保留方法保持兼容性
   }
 
   /// 导出任务到 JSON
@@ -196,6 +201,9 @@ class TaskManager {
     }
 
     await _saveConfig(config);
+    for (final task in tasks) {
+      await _scheduleTaskIfNeeded(task);
+    }
     return tasks;
   }
 
@@ -208,6 +216,9 @@ class TaskManager {
     }
 
     await _saveConfig(config);
+    for (final taskId in taskIds) {
+      await _cancelScheduledTask(taskId);
+    }
   }
 
   /// 获取任务统计信息
@@ -221,6 +232,43 @@ class TaskManager {
       syncingCount: tasks.where((t) => t.status == SyncStatus.syncing).length,
       errorCount: tasks.where((t) => t.status == SyncStatus.error).length,
     );
+  }
+
+  Future<void> _scheduleTaskIfNeeded(SyncTask task) async {
+    if (_scheduler == null || !task.enabled) return;
+    try {
+      await _scheduler!.scheduleTask(task.id, task.intervalMinutes);
+    } catch (e) {
+      debugPrint('调度任务失败: $e');
+    }
+  }
+
+  Future<void> _cancelScheduledTask(String taskId) async {
+    if (_scheduler == null) return;
+    try {
+      await _scheduler!.cancelTask(taskId);
+    } catch (e) {
+      debugPrint('取消调度失败: $e');
+    }
+  }
+
+  Future<void> _updateScheduledTask(
+    SyncTask oldTask,
+    SyncTask newTask,
+  ) async {
+    if (_scheduler == null) return;
+
+    if (!newTask.enabled) {
+      await _cancelScheduledTask(newTask.id);
+      return;
+    }
+
+    final needsReschedule = !oldTask.enabled ||
+        oldTask.intervalMinutes != newTask.intervalMinutes;
+
+    if (needsReschedule) {
+      await _scheduleTaskIfNeeded(newTask);
+    }
   }
 }
 
