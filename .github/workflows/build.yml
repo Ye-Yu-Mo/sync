@@ -72,10 +72,31 @@ jobs:
         run: flutter build windows --release
         shell: pwsh
 
+      - name: Resolve build output path
+        id: windows_paths
+        shell: pwsh
+        run: |
+          $legacy = "build/windows/runner/Release"
+          $modern = "build/windows/x64/runner/Release"
+          if (Test-Path $modern) {
+            $path = $modern
+          } elseif (Test-Path $legacy) {
+            $path = $legacy
+          } else {
+            Write-Error "未找到 Windows 构建输出目录"
+            exit 1
+          }
+          "artifact_path=$path" >> $env:GITHUB_OUTPUT
+          "zip_path=$($path.Replace('\Release','') + 'sftp_sync_manager-windows.zip')" >> $env:GITHUB_OUTPUT
+
       - name: Package Windows app
         run: |
-          $output = "build/windows/runner/Release"
-          $zipPath = "build/windows/runner/sftp_sync_manager-windows.zip"
+          $output = "${{ steps.windows_paths.outputs.artifact_path }}"
+          $zipPath = "${{ steps.windows_paths.outputs.zip_path }}"
+          if (-not (Test-Path $output)) {
+            Write-Error "输出目录不存在：$output"
+            exit 1
+          }
           Compress-Archive -Path "$output/*" -DestinationPath $zipPath -Force
         shell: pwsh
 
@@ -83,4 +104,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sftp-sync-manager-windows
-          path: build/windows/runner/sftp_sync_manager-windows.zip
+          path: ${{ steps.windows_paths.outputs.zip_path }}
