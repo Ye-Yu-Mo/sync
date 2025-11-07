@@ -188,6 +188,7 @@ class TaskManager {
     final config = await _getConfig();
     final newConfig = config.addTask(newTask);
     await _saveConfig(newConfig);
+    await _scheduleTaskIfNeeded(newTask);
 
     return newTask;
   }

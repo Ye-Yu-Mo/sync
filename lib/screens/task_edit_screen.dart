@@ -137,7 +137,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
                 hintText: '例如：/backup/documents',
                 border: const OutlineInputBorder(),
                 prefixIcon: const Icon(Icons.cloud_outlined),
-                helperText: '相对于 $_remoteBaseDisplay/<用户> 的路径',
+                helperText: '相对于 $_remoteBaseDisplay/<用户> 的路径，可写 project 或 /project',
               ),
               validator: _validateRemoteDir,
               textInputAction: TextInputAction.next,
@@ -291,9 +291,6 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
       return '请输入远程目录';
     }
     final trimmed = value.trim();
-    if (!trimmed.startsWith('/')) {
-      return '远程目录必须以 / 开头';
-    }
     if (trimmed.length > 1 && trimmed.endsWith('/')) {
       return '远程目录不能以 / 结尾（根目录除外）';
     }

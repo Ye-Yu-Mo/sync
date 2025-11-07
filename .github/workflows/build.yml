@@ -113,6 +113,8 @@ jobs:
       - build_macos
       - build_windows
     if: github.event_name == 'push'
+    permissions:
+      contents: write
     env:
       RELEASE_TAG: build-${{ github.run_number }}
       RELEASE_NAME: Auto Build #${{ github.run_number }}
