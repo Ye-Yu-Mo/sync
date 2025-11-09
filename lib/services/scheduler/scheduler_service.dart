@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
 import '../../models/models.dart';
+import '../security_scoped_bookmark.dart';
 import '../storage/storage_service.dart';
 import '../sync_engine.dart';
 import '../transport/transport.dart';
@@ -122,6 +124,7 @@ void backgroundSyncCallback() {
 }
 
 Future<bool> _performSyncTask(String taskId) async {
+  SecurityScopedBookmarkSession? bookmarkSession;
   try {
     final storage = StorageService();
     final config = await storage.loadConfig();
@@ -133,6 +136,17 @@ Future<bool> _performSyncTask(String taskId) async {
     if (syncTask == null || !syncTask.enabled) {
       return false;
     }
+
+    if (Platform.isMacOS && syncTask.localBookmark == null) {
+      debugPrint(
+        '[Scheduler] 跳过任务 ${syncTask.id}，需要重新授权本地目录访问。',
+      );
+      return false;
+    }
+
+    bookmarkSession = await MacOSSecurityScopedBookmark.startAccess(
+      syncTask.localBookmark,
+    );
 
     final client = ResilientSftpClient();
     final engine = SyncEngine(client);
@@ -153,8 +167,6 @@ Future<bool> _performSyncTask(String taskId) async {
         lastSyncTime: syncTask.lastSyncTime,
         autoDelete: false,
       );
-
-      await client.disconnect();
 
       await _showNotification(
         taskName: syncTask.name,
@@ -177,8 +189,11 @@ Future<bool> _performSyncTask(String taskId) async {
     } finally {
       await client.disconnect();
     }
-  } catch (_) {
+  } catch (e, stack) {
+    debugPrint('[Scheduler] 后台同步失败: $e\n$stack');
     return false;
+  } finally {
+    await MacOSSecurityScopedBookmark.stopAccess(bookmarkSession);
   }
 }
 

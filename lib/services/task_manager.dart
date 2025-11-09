@@ -22,6 +22,7 @@ class TaskManager {
   Future<SyncTask> createTask({
     required String name,
     required String localDir,
+    String? localBookmark,
     required String remoteDir,
     required String fileBrowserUser,
     required int intervalMinutes,
@@ -31,6 +32,7 @@ class TaskManager {
       id: const Uuid().v4(),
       name: name,
       localDir: localDir,
+      localBookmark: localBookmark,
       remoteDir: remoteDir,
       fileBrowserUser: fileBrowserUser,
       intervalMinutes: intervalMinutes,

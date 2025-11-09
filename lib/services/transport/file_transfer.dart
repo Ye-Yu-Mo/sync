@@ -34,16 +34,17 @@ class FileTransfer {
     for (var chunk in chunks) {
       // 并行上传每组文件
       final results = await Future.wait(
-        chunk.map((file) => _uploadSingleFile(
-          file,
-          localBaseDir,
-          remoteBaseDir,
-          (uploaded, _) {
-            // 聚合进度
-            totalUploaded += uploaded;
-            onProgress?.call(totalUploaded, totalSize);
-          },
-        )),
+        chunk.map(
+          (file) => _uploadSingleFile(
+            file,
+            localBaseDir,
+            remoteBaseDir,
+            (deltaBytes) {
+              totalUploaded += deltaBytes;
+              onProgress?.call(totalUploaded, totalSize);
+            },
+          ),
+        ),
       );
 
       // 收集错误
@@ -62,7 +63,7 @@ class FileTransfer {
     FileInfo fileInfo,
     String localBaseDir,
     String remoteBaseDir,
-    ProgressCallback? onProgress,
+    void Function(int deltaBytes)? onBytesTransferred,
   ) async {
     try {
       final localPath = _joinPath(localBaseDir, fileInfo.relativePath);
@@ -75,11 +76,18 @@ class FileTransfer {
       }
 
       // 上传文件（支持断点续传）
+      int lastUploaded = 0;
       await _client.uploadFile(
         localPath,
         remotePath,
         resume: true,
-        onProgress: onProgress,
+        onProgress: (uploaded, _) {
+          final delta = uploaded - lastUploaded;
+          if (delta > 0) {
+            onBytesTransferred?.call(delta);
+            lastUploaded = uploaded;
+          }
+        },
       );
 
       return null; // 成功

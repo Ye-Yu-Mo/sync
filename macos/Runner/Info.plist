@@ -28,5 +28,11 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>同步任务需要访问您的“文稿”文件夹以读取和上传文件。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>同步任务需要访问您的“下载”文件夹以读取和上传文件。</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>同步任务需要访问您的“桌面”文件夹以读取和上传文件。</string>
 </dict>
 </plist>

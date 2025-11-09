@@ -36,13 +36,13 @@ jobs:
       - name: Package macOS app
         run: |
           cd build/macos/Build/Products/Release
-          ditto -c -k --sequesterRsrc --keepParent sftp_sync_manager.app sftp_sync_manager-macos.zip
+          ditto -c -k --sequesterRsrc --keepParent sftp_sync_manager.app sftp-sync-manager-macos.zip
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: sftp-sync-manager-macos
-          path: build/macos/Build/Products/Release/sftp_sync_manager-macos.zip
+          path: build/macos/Build/Products/Release/sftp-sync-manager-macos.zip
 
   build_windows:
     name: Build Windows App
@@ -87,7 +87,7 @@ jobs:
             exit 1
           }
           "artifact_path=$path" >> $env:GITHUB_OUTPUT
-          "zip_path=$($path.Replace('\Release','') + 'sftp_sync_manager-windows.zip')" >> $env:GITHUB_OUTPUT
+          "zip_path=$($path.Replace('\Release','') + 'sftp-sync-manager-windows.zip')" >> $env:GITHUB_OUTPUT
 
       - name: Package Windows app
         run: |

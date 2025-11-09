@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/services.dart';
@@ -241,15 +242,34 @@ class _TaskListScreenState extends State<TaskListScreen> {
   }
 
   Future<void> _syncTask(SyncTask task) async {
+    final startedAt = DateTime.now();
+    debugPrint(
+      '[ManualSync] Triggered manual sync for task ${task.id} (${task.name})',
+    );
+
     final result = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (context) => SyncProgressScreen(task: task),
       ),
     );
 
-    // 如果同步成功，刷新任务列表
+    final elapsed = DateTime.now().difference(startedAt);
+
     if (result == true && mounted) {
+      debugPrint(
+        '[ManualSync] Task ${task.id} completed in ${elapsed.inSeconds}s',
+      );
+      // 如果同步成功，刷新任务列表
       await _loadTasks();
+    } else if (result == false) {
+      debugPrint(
+        '[ManualSync] Task ${task.id} cancelled after ${elapsed.inSeconds}s',
+      );
+    } else {
+      debugPrint(
+        '[ManualSync] Task ${task.id} exited without completion '
+        '(${elapsed.inSeconds}s)',
+      );
     }
   }
 

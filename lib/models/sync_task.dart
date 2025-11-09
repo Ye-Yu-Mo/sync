@@ -11,6 +11,9 @@ class SyncTask {
   /// 本地目录绝对路径
   final String localDir;
 
+  /// 本地目录安全范围书签（仅 macOS 使用）
+  final String? localBookmark;
+
   /// 远程目录（相对于 remoteBaseDir/\<fileBrowserUser\> 的路径）
   final String remoteDir;
 
@@ -33,6 +36,7 @@ class SyncTask {
     required this.id,
     required this.name,
     required this.localDir,
+    this.localBookmark,
     required this.remoteDir,
     required this.fileBrowserUser,
     required this.intervalMinutes,
@@ -47,6 +51,7 @@ class SyncTask {
       id: json['id'] as String,
       name: json['name'] as String,
       localDir: json['localDir'] as String,
+      localBookmark: json['localBookmark'] as String?,
       remoteDir: json['remoteDir'] as String,
       fileBrowserUser: json['fileBrowserUser'] as String? ?? 'yachen', // 默认 yachen
       intervalMinutes: json['intervalMinutes'] as int,
@@ -66,6 +71,7 @@ class SyncTask {
       'id': id,
       'name': name,
       'localDir': localDir,
+      if (localBookmark != null) 'localBookmark': localBookmark,
       'remoteDir': remoteDir,
       'fileBrowserUser': fileBrowserUser,
       'intervalMinutes': intervalMinutes,
@@ -80,6 +86,7 @@ class SyncTask {
     String? id,
     String? name,
     String? localDir,
+    String? localBookmark,
     String? remoteDir,
     String? fileBrowserUser,
     int? intervalMinutes,
@@ -91,6 +98,7 @@ class SyncTask {
       id: id ?? this.id,
       name: name ?? this.name,
       localDir: localDir ?? this.localDir,
+      localBookmark: localBookmark ?? this.localBookmark,
       remoteDir: remoteDir ?? this.remoteDir,
       fileBrowserUser: fileBrowserUser ?? this.fileBrowserUser,
       intervalMinutes: intervalMinutes ?? this.intervalMinutes,

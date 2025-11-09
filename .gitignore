@@ -167,3 +167,4 @@ app.*.symbols
 
 .claude
 CLAUDE.md
+AGENTS.md

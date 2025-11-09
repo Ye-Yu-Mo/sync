@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/services.dart';
@@ -32,6 +34,9 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
   SyncResult? _result;
   int _uploadedFiles = 0;
   int _totalFiles = 0;
+  int _uploadedBytes = 0;
+  int _totalBytes = 0;
+  double _overallProgress = 0.0;
   double _currentProgress = 0.0;
   double _uploadSpeed = 0.0; // KB/s
   String _errorMessage = '';
@@ -39,6 +44,8 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
   DateTime? _startTime;
   Timer? _speedTimer;
   int _lastBytesUploaded = 0;
+  List<int> _uploadThresholds = [];
+  int _nextThresholdIndex = 0;
 
   @override
   void initState() {
@@ -61,13 +68,31 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
       _isConnecting = true;
       _startTime = DateTime.now();
     });
+    debugPrint(
+      '[ManualSync] [${widget.task.id}] Starting manual sync for '
+      '"${widget.task.name}"',
+    );
+
+    SecurityScopedBookmarkSession? bookmarkSession;
 
     try {
+      if (Platform.isMacOS && widget.task.localBookmark == null) {
+        throw Exception('macOS 需要重新授权该目录，请编辑任务重新选择本地路径。');
+      }
+
+      bookmarkSession = await MacOSSecurityScopedBookmark.startAccess(
+        widget.task.localBookmark,
+      );
+
       // 1. 连接到服务器
       final config = await _storage.loadConfig();
       if (config == null) {
         throw Exception('配置文件不存在');
       }
+      debugPrint(
+        '[ManualSync] [${widget.task.id}] Connecting to '
+        '${config.server.host}:${config.server.port}',
+      );
 
       await _client.connect(
         host: config.server.host,
@@ -75,6 +100,7 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
         username: config.server.username,
         password: config.server.password,
       );
+      debugPrint('[ManualSync] [${widget.task.id}] Connection established');
 
       setState(() {
         _isConnecting = false;
@@ -89,10 +115,31 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
         remoteFullPath,
         lastSyncTime: widget.task.lastSyncTime,
       );
+      debugPrint(
+        '[ManualSync] [${widget.task.id}] Scan finished: '
+        'upload=${_changes!.toUpload.length}, '
+        'delete=${_changes!.toDelete.length}, '
+        'conflict=${_changes!.conflicts.length}',
+      );
 
       setState(() {
         _isScanning = false;
         _totalFiles = _changes!.toUpload.length;
+        _totalBytes = _changes!.toUpload.fold<int>(
+          0,
+          (sum, file) => sum + file.size,
+        );
+        _uploadThresholds = [];
+        var cumulative = 0;
+        for (final file in _changes!.toUpload) {
+          cumulative += file.size;
+          _uploadThresholds.add(cumulative);
+        }
+        _uploadedFiles = 0;
+        _uploadedBytes = 0;
+        _overallProgress = 0.0;
+        _currentProgress = 0.0;
+        _nextThresholdIndex = 0;
       });
 
       // 3. 检查是否有待删除的文件
@@ -100,10 +147,19 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
         final confirmed = await _showDeletionConfirmDialog();
         if (!confirmed) {
           // 用户取消删除，从变更中移除删除项
+          debugPrint(
+            '[ManualSync] [${widget.task.id}] User skipped deleting '
+            '${_changes!.toDelete.length} file(s)',
+          );
           _changes = FileChanges(
             toUpload: _changes!.toUpload,
             toDelete: [],
             conflicts: _changes!.conflicts,
+          );
+        } else {
+          debugPrint(
+            '[ManualSync] [${widget.task.id}] User confirmed deleting '
+            '${_changes!.toDelete.length} file(s)',
           );
         }
       }
@@ -116,6 +172,10 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
 
         _startSpeedCalculation();
 
+        debugPrint(
+          '[ManualSync] [${widget.task.id}] Uploading '
+          '${_changes!.toUpload.length} file(s) to $remoteFullPath',
+        );
         _result = await _engine.performFullSync(
           localDir: widget.task.localDir,
           remoteDir: remoteFullPath,
@@ -123,37 +183,56 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
           autoDelete: false, // 手动处理删除
           onProgress: _onProgress,
         );
+        debugPrint(
+          '[ManualSync] [${widget.task.id}] Sync stats -> uploaded: '
+          '${_result!.uploadedCount}, deleted: ${_result!.deletedCount}, '
+          'conflicts: ${_result!.conflictCount}, errors: '
+          '${_result!.errors.length}',
+        );
 
         _speedTimer?.cancel();
 
-        // 更新上传文件数
-        setState(() {
-          _uploadedFiles = _result!.uploadedCount;
-        });
-
         // 5. 如果用户确认删除，执行删除操作
         if (_changes!.toDelete.isNotEmpty && mounted) {
+          debugPrint(
+            '[ManualSync] [${widget.task.id}] Deleting '
+            '${_changes!.toDelete.length} remote file(s)',
+          );
           await _engine.executeDeletions(
             _changes!.toDelete,
             remoteDir: remoteFullPath,
+          );
+          debugPrint(
+            '[ManualSync] [${widget.task.id}] Remote deletions completed',
           );
         }
 
         // 6. 更新任务状态
         await _updateTaskStatus();
+        debugPrint(
+          '[ManualSync] [${widget.task.id}] Last sync timestamp updated',
+        );
 
         setState(() {
           _isSyncing = false;
           _isCompleted = true;
         });
       }
-    } catch (e) {
+    } catch (e, stack) {
       setState(() {
         _errorMessage = e.toString();
         _isCompleted = true;
       });
+      debugPrint(
+        '[ManualSync] [${widget.task.id}] Sync failed: $e\n$stack',
+      );
     } finally {
+      await MacOSSecurityScopedBookmark.stopAccess(bookmarkSession);
       await _client.disconnect();
+      debugPrint(
+        '[ManualSync] [${widget.task.id}] Connection closed '
+        '(cancelled=$_isCancelled)',
+      );
     }
   }
 
@@ -162,8 +241,31 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
     if (_isCancelled) return;
 
     setState(() {
-      _currentProgress = total > 0 ? uploaded / total : 0.0;
+      final totalBytes = total > 0
+          ? total
+          : (_totalBytes > 0 ? _totalBytes : 1);
+      _overallProgress =
+          totalBytes > 0 ? (uploaded / totalBytes).clamp(0.0, 1.0) : 0.0;
+      _uploadedBytes = uploaded;
       _lastBytesUploaded = uploaded;
+
+      while (_nextThresholdIndex < _uploadThresholds.length &&
+          uploaded >= _uploadThresholds[_nextThresholdIndex]) {
+        _nextThresholdIndex++;
+      }
+      _uploadedFiles = _nextThresholdIndex;
+
+      if (_nextThresholdIndex < _uploadThresholds.length) {
+        final prevThreshold =
+            _nextThresholdIndex == 0 ? 0 : _uploadThresholds[_nextThresholdIndex - 1];
+        final currentThreshold = _uploadThresholds[_nextThresholdIndex];
+        final currentSize = currentThreshold - prevThreshold;
+        final currentUploaded = uploaded - prevThreshold;
+        _currentProgress =
+            currentSize > 0 ? currentUploaded / currentSize : 0.0;
+      } else {
+        _currentProgress = 1.0;
+      }
     });
   }
 
@@ -188,6 +290,7 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
     setState(() {
       _isCancelled = true;
     });
+    debugPrint('[ManualSync] [${widget.task.id}] Sync cancelled by user');
     Navigator.of(context).pop(false);
   }
 
@@ -213,6 +316,18 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
     } catch (e) {
       // 更新状态失败不影响主流程
     }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var value = bytes.toDouble();
+    var unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex++;
+    }
+    return '${value.toStringAsFixed(unitIndex == 0 ? 0 : 1)} ${units[unitIndex]}';
   }
 
   @override
@@ -365,7 +480,7 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
               style: const TextStyle(fontSize: 14),
             ),
             Text(
-              '${(_uploadedFiles / (_totalFiles > 0 ? _totalFiles : 1) * 100).toStringAsFixed(0)}%',
+              '${(_overallProgress * 100).clamp(0, 100).toStringAsFixed(0)}%',
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
@@ -373,16 +488,21 @@ class _SyncProgressScreenState extends State<SyncProgressScreen> {
             ),
           ],
         ),
+        const SizedBox(height: 4),
+        Text(
+          '${_formatBytes(_uploadedBytes)} / ${_formatBytes(_totalBytes)}',
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
+        ),
         const SizedBox(height: 8),
         LinearProgressIndicator(
-          value: _totalFiles > 0 ? _uploadedFiles / _totalFiles : 0.0,
+          value: _overallProgress.clamp(0.0, 1.0),
           minHeight: 8,
         ),
 
         const SizedBox(height: 16),
 
         // 当前文件进度
-        if (_currentProgress > 0) ...[
+        if (_totalFiles > 0 && _uploadedFiles < _totalFiles) ...[
           const Text(
             '当前文件进度:',
             style: TextStyle(fontSize: 13, color: Colors.grey),

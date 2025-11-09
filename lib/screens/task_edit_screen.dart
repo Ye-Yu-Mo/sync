@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
@@ -32,6 +33,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
   String _remoteBaseDisplay = '/data';
   bool _enabled = true;
   bool _isSaving = false;
+  String? _localDirBookmark;
 
   @override
   void initState() {
@@ -49,6 +51,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
     _fileBrowserUserController =
         TextEditingController(text: task?.fileBrowserUser ?? 'yachen');
     _enabled = task?.enabled ?? true;
+    _localDirBookmark = task?.localBookmark;
     _loadRemoteBaseDir();
   }
 
@@ -126,6 +129,23 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
               readOnly: true,
               onTap: _pickLocalDirectory,
             ),
+            if (Platform.isMacOS && _localDirBookmark == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  children: const [
+                    Icon(Icons.warning_amber_rounded,
+                        size: 16, color: Colors.orange),
+                    SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'macOS 需要重新授权目录，请点击右侧按钮重新选择。',
+                        style: TextStyle(fontSize: 12, color: Colors.orange),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
             const SizedBox(height: 16),
 
@@ -333,16 +353,31 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
   /// 选择本地目录
   Future<void> _pickLocalDirectory() async {
     try {
-      final result = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: '选择本地同步目录',
-        initialDirectory: _localDirController.text.isNotEmpty
-            ? _localDirController.text
-            : null,
-      );
+      DirectorySelection? selection;
 
-      if (result != null && mounted) {
+      if (Platform.isMacOS) {
+        selection = await MacOSSecurityScopedBookmark.pickDirectory(
+          initialDirectory: _localDirController.text.isNotEmpty
+              ? _localDirController.text
+              : null,
+        );
+      } else {
+        final path = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: '选择本地同步目录',
+          initialDirectory: _localDirController.text.isNotEmpty
+              ? _localDirController.text
+              : null,
+        );
+        if (path != null) {
+          selection = DirectorySelection(path: path);
+        }
+      }
+
+      final picked = selection;
+      if (picked != null && mounted) {
         setState(() {
-          _localDirController.text = result;
+          _localDirController.text = picked.path;
+          _localDirBookmark = picked.bookmark;
         });
       }
     } catch (e) {
@@ -456,11 +491,25 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
       final intervalMinutes = int.parse(_intervalController.text.trim());
       final fileBrowserUser = _fileBrowserUserController.text.trim();
 
+      if (Platform.isMacOS &&
+          (_localDirBookmark == null || _localDirBookmark!.isEmpty)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('macOS 需要重新授权目录，请重新选择本地文件夹。'),
+            ),
+          );
+          setState(() => _isSaving = false);
+        }
+        return;
+      }
+
       if (widget.task == null) {
         // 新建任务
         await _taskManager.createTask(
           name: name,
           localDir: localDir,
+          localBookmark: _localDirBookmark,
           remoteDir: remoteDir,
           fileBrowserUser: fileBrowserUser,
           intervalMinutes: intervalMinutes,
@@ -477,6 +526,7 @@ class _TaskEditScreenState extends State<TaskEditScreen> {
         final updatedTask = widget.task!.copyWith(
           name: name,
           localDir: localDir,
+          localBookmark: _localDirBookmark,
           remoteDir: remoteDir,
           fileBrowserUser: fileBrowserUser,
           intervalMinutes: intervalMinutes,
